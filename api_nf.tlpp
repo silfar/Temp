@@ -1,0 +1,257 @@
+#include 'totvs.ch'
+#include 'tlpp-core.th'
+
+/*//#########################################################################################
+Projeto : API - GLP
+Modulo  : SIGAFAT
+Fonte   : emitenf_api
+Objetivo: Disponibilizar API para emissão de Nota Fiscal de Saída 
+*///#########################################################################################
+
+
+/*/{Protheus.doc} NotaSaida
+API para emissão de Nota Fiscal de Saída
+@type class
+@version 12.1.23
+@author Silfar Catro
+@since 25/06/2024
+/*/
+class NotaSaida from fwAdapterBaseV2
+
+	public method new() constructor
+
+	@get('/api/notasaida/lista')
+	public method listaNotaSaida() as logical
+
+	@post('/api/notasaida')
+	public method geraNotaSaida() as logical
+
+    @put('/api/notasaida')
+    public method alteraNotaSaida() as logical
+
+	@delete('/api/notasaida')
+	public method deletaNotaSaida() as logical
+
+end class
+
+/*/{Protheus.doc} NotaSaida::new
+metodo construtor
+@type method
+@version 12.1.23
+@author Administrator
+@since 25/06/2024
+@return variant, objeto
+/*/
+method new() class NotaSaida; return self
+
+/*/{Protheus.doc} NotaSaida::geraNotaSaida
+Metodo que gera Nota de venda
+@type method
+@version 1.0
+@author Silfar Castro
+@since 25/06/2024
+@return logical, status
+/*/
+method geraNotaSaida() class NotaSaida
+
+Local aNota := {} 		as array
+Local aLog	 			as array
+Local cQuery 			as character
+Local nY 				as numeric
+Local cALiasSC6 		as character
+Local aAreas			as	array
+Local cSerie 			as character
+Local cMsgRet 			as character
+Local cErro 			as character
+Local jResp  			as json
+Local jBody				as json
+
+Private lMsErroAuto	    as logical
+Private lMsHelpAuto     as logical
+Private lAutoErrNoFile  as logical
+
+Private	 err 			as object
+
+	err := errorClass():new()
+
+	lMsErroAuto	   := .f. 
+	lMsHelpAuto    := .T. 
+	lAutoErrNoFile := .T. 
+
+
+	IF type('cEmpAnt') == 'U'
+		rpcSetEnv('01','01')
+		lRPC := .T.
+	EndIF
+
+//	try
+	BEGIN SEQUENCE
+
+		jBody := jsonObject():new()
+
+		jBody:fromJson(oRest:getBodyRequest())
+		
+		if Empty(jBody['pedido'])
+			
+			err:description := 'Quantidade vendida é obrigatório'
+
+			//throw err
+			break(err)
+		
+		endif
+
+		cPedido := jBody['pedido']
+
+		cALiasSC6 		:= GetNextAlias()
+		aAreas    		:= { SW2->(GetArea()),SF2->(GetArea()) ,SC5->(GetArea()),SE4->(GetArea()),;
+							 SC6->(GetArea()), SC9->(GetArea()),SF4->(GetArea()),SB1->(GetArea()),;
+							 SB2->(GetArea()) , SE1->(GetArea()) ,SED->(GetArea()),SF3->(GetArea()),;
+							 SFT->(GetArea()),GetArea()}
+		cSerie := '001'
+
+		nModulo := 5
+
+		////LogMsg(ProcName(), 0, 6, 1, '', '', ProcName() + "- Gerando Nota de Saida do Pedido : " + cPedido  + " _ " +FWTimeStamp(2))
+
+		SC5->(dbSetOrder(1))
+		SC5->(dbSeek(xFilial('SC5')+cPedido))
+
+		IF !SC5->(Found())
+			
+			err:description := 'Pedido não encontrado'
+			cErro := 'Pedido não encontrado'
+			//throw err
+			break(err)
+		
+		endif
+
+		cMsgRet	:= SC5->C5_MENNOTA
+
+		dDatabase:=Date()
+		SE4->( dbSetOrder(1) )
+		SE4->( dbSeek(xFilial("SE4")+SC5->C5_CONDPAG) )
+
+		cQuery	:= " SELECT  R_E_C_N_O_ SC6REC, C6_FILIAL, C6_NUM" + CRLF
+		cQuery  += " from " + RetSqlname("SC6") + " SC6  (nolock) " + CRLF
+		cQuery  += " WHERE C6_FILIAL   = '"+xFilial("SC6") + "'  "+CRLF
+		cQuery  += " AND C6_NUM   = '"+cPedido + "'  "+CRLF
+		cQuery  += " AND D_E_L_E_T_ = ''   "+CRLF
+		cQuery  += " ORDER BY C6_ITEM   "+CRLF
+
+		MPSysOpenQuery( cQuery,cALiasSC6 )
+
+		do While (cALiasSC6)->(!eof()) .AND. (cALiasSC6)->C6_NUM ==cPedido .AND. (cALiasSC6)->C6_FILIAL == xFilial('SC6')
+
+			SC6->(DbGoto((cALiasSC6)->SC6REC))
+
+			SB1->(DbSetOrder(1) )
+			SB1->(DbSeek(xFilial("SB1")+SC6->C6_PRODUTO) )
+			SB2->(DbSetOrder(1) )
+			SB2->(DbSeek(xFilial("SB2")+SC6->C6_PRODUTO) )
+			SF4->(DbSetOrder(1) )
+			SF4->(DbSeek(xFilial("SF4")+SC6->C6_TES) )
+
+			SC9->(DbSetOrder(1) )
+			SC9->(DbSeek(xFilial('SC9')+SC6->C6_NUM + SC6->C6_ITEM) )
+
+			aAdd(aNota,{SC9->C9_NotaSaida,;
+				SC9->C9_ITEM,;
+				SC9->C9_SEQUEN,;
+				SC9->C9_QTDLIB,;
+				SC9->C9_PRCVEN,;
+				SC9->C9_PRODUTO,;
+				.F.,;
+				SC9->(RecNo()),;
+				SC5->(RecNo()),;
+				SC6->(RecNo()),;
+				SE4->(RecNo()),;
+				SB1->(RecNo()),;
+				SB2->(RecNo()),;
+				SF4->(RecNo()) } )
+
+			(cALiasSC6)->(dbskip())
+		Enddo
+
+		(cALiasSC6)->(DbCloseArea())
+
+
+		SetFunName("MATA461")
+
+		//LogMsg("gerarNotaSaidaVenda", 0, 6, 1, '', ''," Thread "+cValToChar(ThreadId()) )
+		//LogMsg("gerarNotaSaidaVenda", 0, 6, 1, '', ''," Gerando Nota de Saida do Pedido : " +  cPedido   + " - " + FWTimeStamp(2) + " - " +  "Filial :" + cFilAnt)
+
+		If 	Len(aNota) > 0
+			Pergunte("MT460A",.F.)
+			SetMVValue("MT460A","MV_PAR17", 1)
+			SetMVValue("MT460A","MV_PAR18", 1)
+			SetMVValue("MT460A","MV_PAR24", 1)
+			SetMVValue("MT460A","MV_PAR25", 1)
+
+			cNota := MaPvlNfs(aNota,  cSerie, .F., .F., .F., .T., .F., 0, 0, .F., .F.,)
+
+			If lMsErroAuto
+				DisarmTransaction()
+				cNota 		:= ''
+				aLog	    := {}
+				aLog	    := GetAutoGrLog()
+				cErro       := ""
+
+				For nY := 1 To Len(aLog)
+					if (at("Erro",aLog[nY]) <> 0) .or. (at("Invalido",aLog[nY]) <> 0)
+						cErro += aLog[nY] 
+					endif	
+				Next nY
+
+				cMsgRet := AllTrim(cErro)
+				
+				//LogMsg(ProcName(), 0, 6, 1, '', '', ProcName() +  "FALHA NA GERACAO DA NF NotaSaida " + cPedido + "- "+cMsgRet + FWTimeStamp(2))
+				
+		
+//			MostraErro('\data\','erro_pedido.txt')	
+//			cErro := memoread('\data\erro_pedido.txt')  
+		
+				err:description := cErro
+
+				//throw err
+				break(err)
+
+			endif
+		ELSE
+			cMsgRet := "Nao foi localizado item para gerar NF "
+			
+			err:description := cMsgRet
+
+			//throw err
+			break(err)
+		EndIF
+
+		dDatabase:=Date()
+
+		//LogMsg(ProcName(), 0, 6, 1, '', '', ProcName() + "- Finalizando a geracao  NotaSaida: " + cPedido  +" NF gerado " + cNota + "-" + FWTimeStamp(2))
+
+		AEval(aAreas,{|x,y| RestArea(x) })
+		Sleep(2000)
+
+		jResp := jsonObject():new()
+		jResp['numNF'	] := cNota
+		jResp['retorno'		] := 'NOTA GERADA !!'	
+
+		oRest:setResponse(jResp)	
+	
+	//catch err
+	
+	RECOVER
+
+		cErro          := err:description
+		jResp           := jsonObject():new()
+		jResp['error']  := cErro
+
+		oRest:setFault(cErro)     	
+
+	//endtry
+	END SEQUENCE
+
+	IF lRPC
+		rpcClearEnv()
+	EndIF
+Return .t. 
